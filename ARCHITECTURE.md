@@ -1,11 +1,24 @@
 # Architecture & Design Document
 
 ## Overview
-This document outlines the cloud-native architecture designed for migrating Navoy's JavaScript application from a single VM to a scalable, secure AWS infrastructure.
+
+This document explains how I designed a cloud-native architecture to migrate Navoy's JavaScript application from running on a single virtual machine to a scalable, secure AWS infrastructure.
+
+**Current Problem:**
+The application currently runs on a single VM, which has several issues:
+- Can't handle traffic spikes (scalability problem)
+- If the server goes down, the whole app is offline
+- No security isolation
+- Not following modern cloud best practices
+
+**My Solution:**
+Migrate to AWS using containers, load balancing, and infrastructure-as-code to create a system that can scale automatically and stay online even if individual components fail.
+
+---
 
 ## Proposed AWS Architecture
 
-### High-Level Architecture
+### High-Level Flow
 ```
 Internet
     ↓
@@ -16,143 +29,230 @@ ECS Fargate Cluster (Private Subnets)
 Docker Containers (Auto-scaling)
 ```
 
-### Core Components
+### Main Components
 
-**1. Networking Layer**
-- **VPC**: Isolated network environment (CIDR: 10.0.0.0/16)
-- **Public Subnets** (2 AZs): Host ALB, NAT Gateway
-- **Private Subnets** (2 AZs): Host ECS tasks (more secure)
-- **Internet Gateway**: Allows public subnet internet access
-- **NAT Gateway**: Allows private subnets outbound internet access
+**VPC (Virtual Private Cloud)**
 
-**2. Compute Layer**
-- **ECS Fargate**: Serverless container orchestration
-- **Task Definition**: Defines our containerized application
-- **Service**: Manages desired task count and auto-scaling
-- **ECR**: Container image registry
+I created a VPC, which is basically our own isolated network space in AWS (like renting a private office building). Everything we build sits inside this VPC with the IP range 10.0.0.0/16, separated from other users' infrastructure.
 
-**3. Load Balancing**
-- **Application Load Balancer**: Distributes traffic across containers
-- **Target Group**: Routes to healthy ECS tasks
-- **Health Checks**: `/health` endpoint monitoring
+**Subnets**
 
-**4. Security**
-- **Security Groups**: Firewall rules (ALB, ECS)
-- **IAM Roles**: Least privilege access for ECS tasks
-- **Private Subnets**: Application runs in isolated network
+Inside the VPC, I set up two types of subnets across two availability zones (different physical locations):
+
+- **Public Subnets (2)**: These can be accessed from the internet. I placed the load balancer here so users can reach our application.
+- **Private Subnets (2)**: These are NOT directly accessible from the internet. Our application containers run here for better security.
+
+**Internet Gateway & NAT Gateway**
+
+- **Internet Gateway**: Allows the public subnets to communicate with the internet
+- **NAT Gateway**: Allows containers in private subnets to reach the internet for things like downloading updates (but internet users can't reach them directly)
+
+**Application Load Balancer (ALB)**
+
+The load balancer sits in the public subnets and acts like a traffic controller. When users access our app, the load balancer distributes their requests evenly across all running containers. This prevents any single container from getting overloaded and provides a single entry point for all traffic.
+
+**ECS Fargate**
+
+ECS (Elastic Container Service) is AWS's service for running Docker containers. I chose Fargate, which is the "serverless" option - meaning AWS manages the underlying servers for us. ECS handles:
+- Running our Docker containers in the private subnets
+- Monitoring container health
+- Automatically restarting failed containers  
+- Scaling the number of containers based on demand
+
+**Security Groups**
+
+Security groups are firewall rules that control what traffic is allowed:
+- **ALB Security Group**: Accepts HTTP traffic (port 80) from anyone on the internet
+- **ECS Security Group**: Only accepts traffic from the load balancer on port 3000 (our app's port)
+
+This layered approach means users can't directly access our containers - they must go through the load balancer.
+
+**IAM Roles**
+
+I set up IAM roles (AWS's permission system) so our containers can:
+- Pull Docker images from the registry
+- Write logs to CloudWatch
+- Access other AWS services they need
+
+This follows the "least privilege" principle - giving only the minimum permissions needed.
 
 ---
 
-## Scalability
+## How Scalability Works
 
-### Auto-Scaling Strategy
-- **Target Tracking Scaling**: Scale based on CPU/Memory utilization
-- **Min Tasks**: 2 (for high availability)
-- **Max Tasks**: 10 (cost control)
-- **Scale-out threshold**: >70% CPU
-- **Scale-in threshold**: <30% CPU
+**Auto-Scaling**
 
-### Load Balancing
-- ALB distributes traffic across multiple AZs
-- Health checks ensure only healthy tasks receive traffic
-- Connection draining during scale-in events
+I configured ECS to automatically add or remove containers based on CPU and memory usage:
+- **Minimum**: 2 containers (for reliability - if one fails, we still have one running)
+- **Maximum**: 10 containers (to control costs)
+- **Scale up**: When CPU goes above 70%
+- **Scale down**: When CPU drops below 30%
+
+**Load Balancing**
+
+The Application Load Balancer distributes incoming traffic across all available containers. It also performs health checks on the `/health` endpoint every 30 seconds. If a container is unhealthy, the load balancer stops sending traffic to it until it recovers.
+
+**Multi-AZ Deployment**
+
+By spreading resources across two availability zones (us-east-1a and us-east-1b), the system stays online even if one entire data center goes down.
 
 ---
 
-## Reliability & Security
+## Security & Reliability
 
-### Reliability
-- **Multi-AZ Deployment**: Resources span 2 availability zones
-- **Health Checks**: Automatic unhealthy task replacement
-- **Rolling Updates**: Zero-downtime deployments
-- **Auto-Recovery**: ECS automatically replaces failed tasks
+### Security Approach
 
-### Security
-- **Network Isolation**: Application in private subnets
-- **Security Groups**: Restrictive ingress/egress rules
-  - ALB: Only ports 80/443 from internet
-  - ECS: Only port 3000 from ALB
-- **IAM Roles**: Least privilege access
-- **Secrets Management**: AWS Secrets Manager (production)
-- **No Hardcoded Credentials**: All via IAM roles
+**Network Isolation**
+- Application containers run in private subnets with no direct internet access
+- Only the load balancer is publicly accessible
+- Traffic must flow through the load balancer to reach containers
+
+**Firewall Rules (Security Groups)**
+- Restrictive rules: Only allow necessary traffic
+- ALB: Accepts HTTP/HTTPS from anywhere
+- ECS: Only accepts traffic from ALB on port 3000
+
+**No Hardcoded Secrets**
+- No passwords or API keys in code
+- Would use AWS Secrets Manager for sensitive data in production
+- IAM roles provide permissions instead of storing credentials
+
+### Reliability Features
+
+**Health Checks**
+- Load balancer checks container health every 30 seconds
+- Unhealthy containers are automatically replaced
+- Traffic only goes to healthy containers
+
+**Multi-AZ Deployment**
+- Resources spread across 2 availability zones
+- If one zone fails, the other keeps running
+
+**Rolling Updates**
+- When deploying new code, containers update gradually
+- Old containers keep running until new ones are healthy
+- Zero downtime during deployments
 
 ---
 
 ## CI/CD Strategy
 
-### Pipeline Overview
+### The Deployment Pipeline
+
+I set up a GitHub Actions workflow that automates the deployment process:
 ```
-Code Push → GitHub Actions → Build → Test → Docker Build → Push to ECR → Deploy to ECS
+1. Code Push (to main branch)
+   ↓
+2. Run Tests
+   ↓
+3. Build Docker Image
+   ↓
+4. Push Image to Registry (ECR)
+   ↓
+5. Update ECS Service
+   ↓
+6. Rolling Deployment
 ```
 
-### GitHub Actions Workflow
-1. **Trigger**: On push to `main` branch
-2. **Build**: Install dependencies, run tests
-3. **Containerize**: Build Docker image
-4. **Push**: Upload to ECR
-5. **Deploy**: Update ECS service with new image
+**How It Works:**
 
-### Deployment Strategy
-- **Rolling updates**: Gradual task replacement
-- **Health checks**: Ensure new tasks healthy before continuing
-- **Rollback**: Automated if health checks fail
+1. **Trigger**: When code is pushed to the main branch
+2. **Build & Test**: Installs dependencies and runs tests
+3. **Containerize**: Builds a Docker image with the new code
+4. **Push**: Uploads the image to AWS ECR (container registry)
+5. **Deploy**: Updates the ECS service to use the new image
+6. **Health Checks**: ECS gradually replaces old containers, checking that new ones are healthy before continuing
+
+**Rollback Strategy:**
+If the new deployment fails health checks, ECS automatically stops the deployment and keeps the old version running.
 
 ---
 
-## Key Trade-offs & Assumptions
+## Key Decisions & Trade-offs
 
-### Decisions Made
+### Why ECS Fargate Instead of EC2?
 
-**1. ECS Fargate vs. EC2**
-- ✅ **Chose Fargate**: Serverless, no server management, easier scaling
-- ❌ **Trade-off**: Slightly higher cost vs EC2, less control
-- **Why**: Simpler operations, faster to market, good for MVP
+**Decision**: Use Fargate (serverless containers)
 
-**2. ECS vs. EKS (Kubernetes)**
-- ✅ **Chose ECS**: Simpler, AWS-native, easier for small teams
-- ❌ **Trade-off**: Less portable, smaller ecosystem than K8s
-- **Why**: Assignment specifies EKS as "design-only", ECS sufficient for needs
+**Pros:**
+- No need to manage servers
+- Easier to scale
+- Only pay for containers running, not idle servers
 
-**3. Application Load Balancer vs. Network Load Balancer**
-- ✅ **Chose ALB**: HTTP/HTTPS routing, health checks, better for web apps
-- **Why**: Our app is HTTP-based, need path-based routing
+**Cons:**
+- Slightly more expensive than managing your own EC2 servers
+- Less control over the underlying infrastructure
 
-**4. Multi-AZ vs. Single AZ**
-- ✅ **Chose Multi-AZ**: Better availability
-- ❌ **Trade-off**: Higher cost (NAT Gateway x2, data transfer)
-- **Why**: Production-ready design, high availability requirement
+**Why I chose it**: For this project, the simplicity and ease of management outweigh the extra cost. It's also more modern and follows AWS best practices.
 
-### Assumptions
+### Why ECS Instead of Kubernetes (EKS)?
 
-1. **Application is stateless**: No persistent local storage needed
-2. **Traffic patterns**: Moderate, predictable load (not extreme spikes)
-3. **Database**: Not included in MVP (can add RDS/DynamoDB later)
-4. **Region**: Single region deployment (us-east-1)
-5. **SSL/TLS**: Not implemented in LocalStack version (would use ACM in production)
+**Decision**: Use ECS
+
+**Pros:**
+- Simpler to set up and manage
+- Better integration with AWS services
+- Easier for small teams
+
+**Cons:**
+- Less portable (locked into AWS)
+- Smaller community than Kubernetes
+
+**Why I chose it**: The assignment mentioned EKS as "design-only", and for this scale of application, ECS is sufficient and simpler.
+
+### Why Multi-AZ?
+
+**Decision**: Deploy across 2 availability zones
+
+**Pros:**
+- High availability - survives data center failure
+- Production-ready architecture
+
+**Cons:**
+- Higher cost (need resources in both zones, 2 NAT gateways)
+
+**Why I chose it**: Reliability is important, and this is the standard approach for production applications.
 
 ---
 
-## What Would I Improve With More Time?
+## Assumptions I Made
 
-### Short-term (1-2 weeks)
-- Add **RDS database** (PostgreSQL/MySQL)
-- Implement **CloudWatch dashboards** for monitoring
-- Add **SSL/TLS** with ACM certificates
-- Implement **WAF** for security
-- Add **CloudFront CDN** for caching
+1. **The application is stateless**: It doesn't store data locally on the container. Any state would be stored in a database (not implemented in this MVP).
+
+2. **Traffic is moderate**: Not expecting millions of requests per second. The 2-10 container range should handle normal loads.
+
+3. **Single region is acceptable**: Deploying only in us-east-1. Multi-region would add complexity and cost.
+
+4. **No database needed yet**: The application can run without a database for now. In production, I'd add RDS (managed database service).
+
+5. **HTTP is fine for now**: Not implementing HTTPS/SSL in the LocalStack version, but would use AWS Certificate Manager for real deployment.
+
+---
+
+## What I Would Improve With More Time
+
+### Short-term (Next 1-2 weeks)
+
+- **Add a database**: Set up RDS (PostgreSQL or MySQL) for data persistence
+- **Implement HTTPS**: Use AWS Certificate Manager for SSL certificates
+- **Better monitoring**: Create CloudWatch dashboards to visualize metrics
+- **WAF (Web Application Firewall)**: Add protection against common web attacks
+- **CDN**: Add CloudFront for faster content delivery worldwide
 
 ### Medium-term (1-2 months)
-- **Multi-region deployment** for disaster recovery
-- **ElastiCache** (Redis) for session management
-- **Secrets rotation** automation
-- **Cost optimization**: Spot instances, reserved capacity
-- **Advanced monitoring**: Distributed tracing (X-Ray)
+
+- **Multi-region deployment**: Deploy to multiple AWS regions for disaster recovery
+- **Caching**: Add ElastiCache (Redis) for faster response times
+- **Better CI/CD**: Add automated integration tests, staging environment
+- **Cost optimization**: Analyze usage patterns and optimize resource allocation
+- **Advanced monitoring**: Implement distributed tracing with X-Ray
 
 ### Long-term (3-6 months)
-- **Kubernetes (EKS)** migration for complex microservices
-- **Service mesh** (App Mesh) for advanced traffic management
-- **Infrastructure testing** (Terratest)
-- **GitOps** workflow (ArgoCD/Flux)
+
+- **Migrate to Kubernetes**: If the application grows into multiple microservices
+- **Infrastructure testing**: Add automated tests for Terraform code (Terratest)
+- **GitOps**: Implement continuous deployment with ArgoCD
+- **Advanced security**: Implement automated security scanning, compliance checks
 
 ---
 
@@ -197,6 +297,6 @@ Code Push → GitHub Actions → Build → Test → Docker Build → Push to ECR
 
 ## Conclusion
 
-This architecture provides a solid foundation for a scalable, reliable, and secure cloud-native application. The design balances simplicity with production-readiness, making it suitable for immediate deployment while allowing for future enhancements.
+This architecture solves the original problem of running on a single VM by creating a scalable, reliable, and secure cloud-native system. The design uses modern tools (Docker, Terraform, CI/CD) and AWS best practices while keeping things simple enough to understand and maintain.
 
-The use of containers, infrastructure as code, and automated CI/CD ensures the system is maintainable and can evolve with business needs.
+The infrastructure can automatically scale to handle more users, stays online even when components fail, and follows security best practices. While there's room for improvement (database, HTTPS, better monitoring), this provides a solid foundation that can grow with the application's needs.

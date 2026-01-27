@@ -147,7 +147,7 @@ resource "aws_ecs_service" "app" {
   network_configuration {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]
-    assign_public_ip = var.use_localstack ? true : false  # LocalStack needs public IP
+    assign_public_ip = var.use_localstack ? true : false # LocalStack needs public IP
   }
 
   load_balancer {

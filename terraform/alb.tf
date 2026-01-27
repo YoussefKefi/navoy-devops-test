@@ -7,7 +7,7 @@ resource "aws_lb" "main" {
   subnets            = aws_subnet.public[*].id
 
   enable_deletion_protection = false
-  enable_http2              = true
+  enable_http2               = true
 
   tags = {
     Name        = "${var.project_name}-alb"
@@ -21,7 +21,7 @@ resource "aws_lb_target_group" "app" {
   port        = var.app_port
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
-  target_type = "ip"  # Required for Fargate
+  target_type = "ip" # Required for Fargate
 
   health_check {
     enabled             = true
