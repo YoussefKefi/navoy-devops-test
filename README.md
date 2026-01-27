@@ -8,7 +8,6 @@ practices including Infrastructure as Code (Terraform), CI/CD (GitHub Actions), 
 
 ---
 
-## 📁 Repository Structure
 
 ## 📁 Repository Structure
 ```
