@@ -10,6 +10,8 @@ practices including Infrastructure as Code (Terraform), CI/CD (GitHub Actions), 
 
 ## 📁 Repository Structure
 
+## 📁 Repository Structure
+```
 navoy-devops-test/
 ├── README.md                    # This file - setup instructions
 ├── ARCHITECTURE.md              # Architecture design and decisions
