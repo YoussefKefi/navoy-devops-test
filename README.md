@@ -85,7 +85,7 @@ Before running this project, ensure you have:
 
 ### Step 1: Clone the Repository
 ```bash
-git clone 
+git clone https://github.com/YoussefKefi/navoy-devops-test
 cd navoy-devops-test
 ```
 
