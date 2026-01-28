@@ -16,6 +16,8 @@ navoy-devops-test/
 ├── ARCHITECTURE.md              # Architecture design and decisions
 ├── DEVOPS_REASONING.md          # DevOps best practices Q&A
 ├── app/                         # JavaScript application
+│   ├──node_modules/
+│      └──....
 │   ├── server.js                # Node.js Express application
 │   ├── package.json             # Node dependencies
 │   ├── Dockerfile               # Container definition
