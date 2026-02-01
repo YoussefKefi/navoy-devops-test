@@ -86,7 +86,7 @@ I configured ECS to automatically add or remove containers based on CPU and memo
 - **Minimum**: 2 containers (for reliability - if one fails, we still have one running)
 - **Maximum**: 10 containers (to control costs)
 - **Scale up**: When CPU goes above 70%
-- **Scale down**: When CPU drops below 30%
+- **Scale down**: When CPU < 70%, remove containers (with 5-minute cooldown to prevent rapid scaling)
 
 **Load Balancing**
 
